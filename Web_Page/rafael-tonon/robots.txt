@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://t0n0nn.github.io/rafael_tonon/sitemap.xml

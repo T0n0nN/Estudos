@@ -1,0 +1,3 @@
+2025-09-01 16:27:58,810 INFO: ▶️  Início do processo de instalação de IOS
+2025-09-01 16:28:18,705 INFO: Switch (10.104.136.247) ➜ aguardando reload e validação...
+2025-09-01 16:32:39,345 ERROR: Switch (10.104.136.247) ➜ ERRO validação versão: 17.12.04.0.4826

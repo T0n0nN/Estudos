@@ -1,0 +1,934 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 9659e79404ea49f3af29582a551cf44a
+      name: Templates/Network devices
+  templates:
+    - uuid: 608f636ba4814207a55a39b602db7547
+      template: Template Cisco PortChannel Member Monitoring
+      name: Template Cisco PortChannel Member Monitoring
+      description: |
+        Monitors Cisco trunk uplinks:
+        - PortChannel/LACP member links (alerts even if PortChannel stays Up)
+        - Standalone trunk ports (not part of a PortChannel)
+
+        Triggers when an interface stays Down for {$LINK.DOWN.DURATION}.
+        Uses IF-MIB, IEEE8023-LAG-MIB and CISCO-VTP-MIB.
+        - ifName: 1.3.6.1.2.1.31.1.1.1.1
+        - ifOperStatus: 1.3.6.1.2.1.2.2.1.8
+        - dot3adAggPortTable: 1.2.840.10006.300.43.1.2.1.1 (uses .4 and .12)
+        - vlanTrunkPortDynamicStatus: 1.3.6.1.4.1.9.9.46.1.6.1.1.14 (trunking(1)/notTrunking(2))
+      groups:
+        - name: Templates/Network devices
+      macros:
+        - macro: '{$LINK.DOWN.DURATION}'
+          value: 5m
+          description: 'How long an interface must stay down before raising a problem.'
+        - macro: '{$SSH.USER}'
+          value: ''
+          description: 'SSH username (for EtherChannel static/mode on parsing via CLI).'
+        - macro: '{$SSH.PASS}'
+          value: ''
+          description: 'SSH password (for EtherChannel static/mode on parsing via CLI).'
+        - macro: '{$SSH.PORT}'
+          value: '22'
+          description: 'SSH port.'
+      items:
+        - uuid: eb04207cf60f41a7a2870d09c6e4ab66
+          name: 'IF-MIB::ifName walk'
+          type: SNMP_AGENT
+          snmp_oid: 'walk[1.3.6.1.2.1.31.1.1.1.1]'
+          key: ifName.walk
+          delay: 5m
+          timeout: 10s
+          value_type: TEXT
+          trends: '0'
+        - uuid: 1c2d3e4f5a6b4c7d8e9f0a1b2c3d4e5f
+          name: 'CISCO-PORT-CHANNEL-MIB::portChannelTable walk'
+          type: SNMP_AGENT
+          snmp_oid: 'walk[1.3.6.1.4.1.9.9.285.1.1.1.1]'
+          key: cisco.portchannel.table.walk
+          delay: 5m
+          timeout: 10s
+          value_type: TEXT
+          trends: '0'
+          description: |
+            Walk of CISCO-PORT-CHANNEL-MIB portChannelTable.
+            Used as input for dependent LLD to discover EtherChannel members in static mode (channel-group ... mode on).
+        - uuid: a1b2c3d4e5f64a7b8c9d0e1f2a3b4c5d
+          name: 'IF-MIB::ifStackTable walk'
+          type: SNMP_AGENT
+          snmp_oid: 'walk[1.3.6.1.2.1.31.1.2.1.3]'
+          key: ifStackTable.walk
+          delay: 5m
+          timeout: 10s
+          value_type: TEXT
+          trends: '0'
+          description: |
+            Walk of IF-MIB ifStackStatus (ifStackTable column 3).
+            Used as input for dependent LLD to discover PortChannel member relationships
+            even when CISCO-PORT-CHANNEL-MIB is not accessible.
+
+        - uuid: 4b2c9f6a1a2b4f5c9d3e1b2c3d4e5f6a
+          name: 'CLI: show etherchannel summary'
+          type: SSH
+          key: 'ssh.run[etherchannel.summary,{HOST.CONN},{$SSH.PORT},utf8]'
+          delay: 5m
+          timeout: 20s
+          value_type: TEXT
+          trends: '0'
+          params: 'show etherchannel summary'
+          username: '{$SSH.USER}'
+          password: '{$SSH.PASS}'
+          description: |
+            Used to detect degraded PortChannels in static mode ("channel-group ... mode on")
+            when member->Po mapping is not reliably available via SNMP.
+        
+      valuemaps:
+        - uuid: ad175cebc12d4196ae4bec13c1ef1fb4
+          name: IF-MIB::ifOperStatus
+          mappings:
+            - value: '1'
+              newvalue: up
+            - value: '2'
+              newvalue: down
+            - value: '3'
+              newvalue: testing
+            - value: '4'
+              newvalue: unknown
+            - value: '5'
+              newvalue: dormant
+            - value: '6'
+              newvalue: notPresent
+            - value: '7'
+              newvalue: lowerLayerDown
+      discovery_rules:
+        - uuid: 1f3d4a9b6d0a4e1b9f5a2fd7c3f7b2a1
+          name: PortChannel interface discovery (Po)
+          type: SNMP_AGENT
+          key: portchannel.interface.discovery
+          delay: 5m
+          description: |
+            Discovers PortChannel interfaces themselves (PoX) via IF-MIB ifName.
+            Useful to alert when the PortChannel interface goes Down.
+          snmp_oid: 'discovery[{#POIFNAME},1.3.6.1.2.1.31.1.1.1.1]'
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#POIFNAME}'
+                value: '^(Po|Port-channel)'
+                operator: MATCHES_REGEX
+                formulaid: A
+          item_prototypes:
+            - uuid: 2a5c7d0e3a3f4b0a9f7e6d3c2b1a0f9e
+              name: 'ifOperStatus {#POIFNAME} (PortChannel)'
+              type: SNMP_AGENT
+              key: 'ifOperStatus.po[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFNAME}'
+                - tag: Role
+                  value: portchannel
+          trigger_prototypes:
+            - uuid: 9a0f1c2b3d4e4f60818293a4b5c6d7e8
+              name: 'PortChannel {#POIFNAME} Down'
+              expression: '(min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.po[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=2 or min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.po[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=7)'
+              event_name: '{HOST.HOST} PortChannel {#POIFNAME} down'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: role
+                  value: portchannel
+
+        - uuid: b31eaea66df44ff387505a99e2e26a20
+          name: LACP member port discovery
+          type: SNMP_AGENT
+          key: lacp.member.discovery
+          delay: 5m
+          lifetime: 30d
+          enabled_lifetime: 30d
+          description: |
+            Discovers LACP member ports using IEEE8023-LAG-MIB.
+            Robust mapping for degraded PortChannels:
+            - If dot3adAggPortAttachedAggID (.12) > 0, we use it directly as the PortChannel ifIndex.
+            - If (.12)=0 but the port still has an operKey (.4), we map that operKey to a PortChannel ifIndex
+              learned from other ports that are attached (so member DOWN still gets discovered).
+          snmp_oid: 'discovery[{#OPERKEY},1.2.840.10006.300.43.1.2.1.1.4,{#ATTACHED},1.2.840.10006.300.43.1.2.1.1.12]'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Input: SNMP discovery JSON with macros {#OPERKEY} (.4) and {#ATTACHED} (.12).
+                  // Output: discovery JSON with {#SNMPINDEX} (member ifIndex) and {#POIFINDEX} (PortChannel ifIndex).
+                  // This keeps member->Po mapping even when a member reports attachedAggID=0 (common when link is down).
+
+                  var obj;
+                  try { obj = JSON.parse(value); } catch (e) { return JSON.stringify({data: []}); }
+                  // Zabbix can return discovery JSON as either:
+                  //  - {"data": [ {...}, ... ]}
+                  //  - [ {...}, ... ]
+                  var rows = [];
+                  if (Array.isArray(obj)) rows = obj;
+                  else if (obj && Array.isArray(obj.data)) rows = obj.data;
+
+                  function toInt(v) {
+                    var m = String(v == null ? '' : v).match(/-?\d+/);
+                    return m ? parseInt(m[0], 10) : 0;
+                  }
+
+                  var poIfByKey = {};
+                  for (var i = 0; i < rows.length; i++) {
+                    var r = rows[i] || {};
+                    var key = toInt(r['{#OPERKEY}']);
+                    var poIf = toInt(r['{#ATTACHED}']);
+                    if (key > 0 && poIf > 0 && !poIfByKey[key]) poIfByKey[key] = poIf;
+                  }
+
+                  var out = [];
+                  var seen = {};
+                  for (var j = 0; j < rows.length; j++) {
+                    var row = rows[j] || {};
+                    var memberIfIndex = toInt(row['{#SNMPINDEX}']);
+                    var operKey = toInt(row['{#OPERKEY}']);
+                    if (memberIfIndex <= 0 || operKey <= 0) continue;
+
+                    var poIfIndex = toInt(row['{#ATTACHED}']);
+                    if (poIfIndex <= 0) poIfIndex = poIfByKey[operKey] || 0;
+                    if (poIfIndex <= 0) continue;
+
+                    var dedupeKey = memberIfIndex + ':' + poIfIndex;
+                    if (seen[dedupeKey]) continue;
+                    seen[dedupeKey] = true;
+                    out.push({"{#SNMPINDEX}": String(memberIfIndex), "{#POIFINDEX}": String(poIfIndex)});
+                  }
+
+                  return JSON.stringify({data: out});
+          item_prototypes:
+            - uuid: 3f0b7b4e0d1b4b46a5c2f0c2c52c2e1a
+              name: 'ifName ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'ifName.member[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#SNMPINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: c3eca412fe9c4a95b90a43d3de229603
+              name: 'ifOperStatus ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'ifOperStatus[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: e5b77ccffc364d7ebf06df4bd7ad1c80
+              name: 'PortChannel name for ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'portchannel.ifName[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#POIFINDEX}'
+              delay: 60s
+              value_type: CHAR
+              description: 'ifName of the PortChannel interface (e.g. Po101)'
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 2d3e4f5a6b7c4d8e9f0a1b2c3d4e5f60
+              name: 'PortChannel ifOperStatus for ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'portchannel.ifOperStatus[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#POIFINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              description: 'Oper status of the PortChannel interface (used to suppress member alarms when Po is down).'
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 8bbfb9fead0849da9f1cef9c2fe3ac77
+              name: 'PortChannel ID for ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'lacp.member.aggkey[{#SNMPINDEX}]'
+              snmp_oid: '1.2.840.10006.300.43.1.2.1.1.4.{#SNMPINDEX}'
+              delay: 15m
+              value_type: UNSIGNED
+              description: 'LACP key from dot3adAggPortTable (not the PortChannel number)'
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+          trigger_prototypes:
+            - uuid: 57b7aae95f6d49b08a914f8bb74427b0
+              name: 'Interface {#SNMPINDEX} Down - {#POIFINDEX}'
+              expression: 'last(/Template Cisco PortChannel Member Monitoring/ifName.member[{#SNMPINDEX}])<>"" and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifName[{#SNMPINDEX}])<>"" and (min(/Template Cisco PortChannel Member Monitoring/ifOperStatus[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=2 or min(/Template Cisco PortChannel Member Monitoring/ifOperStatus[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=7) and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifOperStatus[{#SNMPINDEX}])=1'
+              event_name: '{HOST.HOST} Interface {ITEM.LASTVALUE1} down - {ITEM.LASTVALUE2}'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: interface
+                  value: '{#SNMPINDEX}'
+                - tag: portchannel
+                  value: '{#POIFINDEX}'
+
+        - uuid: 3e4f5a6b7c8d4e9f8a0b1c2d3e4f5a6b
+          name: EtherChannel member port discovery (Cisco PortChannel MIB)
+          type: DEPENDENT
+          key: etherchannel.member.discovery.cisco
+          delay: '0'
+          description: |
+            Fallback discovery for EtherChannel members (static mode "on") using CISCO-PORT-CHANNEL-MIB.
+            It discovers member ifIndex values from portChannelMemberList and maps them to the PortChannel ifIndex.
+            Triggers fire only when the member link is Down while the PortChannel interface stays Up.
+          master_item:
+            key: cisco.portchannel.table.walk
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Input: SNMP walk text of CISCO-PORT-CHANNEL-MIB::portChannelTable (1.3.6.1.4.1.9.9.285.1.1.1.1)
+                  // We need:
+                  //  - column 2: portChannelIfIndex (.1.3.6.1.4.1.9.9.285.1.1.1.1.2.<pcIndex>)
+                  //  - column 9: portChannelMemberList (.1.3.6.1.4.1.9.9.285.1.1.1.1.9.<pcIndex>)
+                  // Output: {"data":[{"{#IFINDEX}":"<member>","{#POIFINDEX}":"<poIfIndex>"}, ...]}
+                  
+                  function extractHexBytes(s) {
+                    // Supports:
+                    // - "Hex-STRING: 00 01 02"
+                    // - "STRING: 0x000102" (or just "0x000102")
+                    // - any string containing hex pairs
+                    if (!s) return [];
+                    var m0x = s.match(/0x([0-9A-Fa-f]+)/);
+                    if (m0x && m0x[1] && m0x[1].length >= 2) {
+                      var hex = m0x[1];
+                      if (hex.length % 2 === 1) hex = '0' + hex;
+                      var out0x = [];
+                      for (var i=0;i<hex.length;i+=2) out0x.push(parseInt(hex.substr(i,2), 16));
+                      return out0x;
+                    }
+
+                    var m = s.match(/([0-9A-Fa-f]{2}(?:\s+[0-9A-Fa-f]{2})+)/);
+                    if (!m) return [];
+                    return m[1].trim().split(/\s+/).map(function(h){ return parseInt(h,16); });
+                  }
+
+                  function parseMemberList(bytes) {
+                    var out = [];
+                    if (!bytes || bytes.length === 0) return out;
+
+                    if (bytes.length % 4 === 0) {
+                      for (var i=0;i<bytes.length;i+=4) {
+                        var v = (bytes[i]<<24) | (bytes[i+1]<<16) | (bytes[i+2]<<8) | (bytes[i+3]);
+                        // convert signed to unsigned
+                        v = v >>> 0;
+                        if (v > 0) out.push(v);
+                      }
+                      return out;
+                    }
+
+                    if (bytes.length % 2 === 0) {
+                      for (var j=0;j<bytes.length;j+=2) {
+                        var v2 = (bytes[j]<<8) | bytes[j+1];
+                        if (v2 > 0) out.push(v2);
+                      }
+                      return out;
+                    }
+
+                    return out;
+                  }
+
+                  var text = value || '';
+                  var lines = text.split(/\r?\n/);
+                  var poIfIndexByPcIndex = {};
+                  var memberHexByPcIndex = {};
+
+                  for (var k=0;k<lines.length;k++) {
+                    var line = lines[k].trim();
+                    if (!line) continue;
+                    var m = line.match(/^(\S+)\s*=\s*(.*)$/);
+                    if (!m) continue;
+                    var oid = m[1];
+                    var rhs = m[2];
+                    // Zabbix walk may output numeric OID or textual like SNMPv2-SMI::enterprises.9.9.285...
+                    var om = oid.match(/(?:^|\.)1\.3\.6\.1\.4\.1\.9\.9\.285\.1\.1\.1\.1\.(\d+)\.(\d+)$/) ||
+                             oid.match(/(?:^|\.)enterprises\.9\.9\.285\.1\.1\.1\.1\.(\d+)\.(\d+)$/);
+                    if (!om) continue;
+                    var col = parseInt(om[1], 10);
+                    var pcIndex = om[2];
+
+                    if (col === 2) {
+                      var im = rhs.match(/(-?\d+)/);
+                      if (im) poIfIndexByPcIndex[pcIndex] = parseInt(im[1], 10);
+                    } else if (col === 9) {
+                      memberHexByPcIndex[pcIndex] = rhs;
+                    }
+                  }
+
+                  var seen = {};
+                  var data = [];
+                  Object.keys(memberHexByPcIndex).forEach(function(pcIndex){
+                    var poIf = poIfIndexByPcIndex[pcIndex];
+                    if (!poIf || poIf <= 0) return;
+                    var bytes = extractHexBytes(memberHexByPcIndex[pcIndex]);
+                    var members = parseMemberList(bytes);
+                    for (var i=0;i<members.length;i++) {
+                      var ifi = members[i];
+                      var key = ifi + ':' + poIf;
+                      if (seen[key]) continue;
+                      seen[key] = true;
+                      data.push({"{#IFINDEX}": String(ifi), "{#POIFINDEX}": String(poIf)});
+                    }
+                  });
+
+                  return JSON.stringify({data: data});
+          item_prototypes:
+            - uuid: 4f5a6b7c8d9e4f0a8b1c2d3e4f5a6b7c
+              name: 'ifName ifIndex {#IFINDEX} (EtherChannel static)'
+              type: SNMP_AGENT
+              key: 'ifName.member.ec[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#IFINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 5a6b7c8d9e0f4a1b8c2d3e4f5a6b7c8d
+              name: 'PortChannel name for ifIndex {#IFINDEX} (EtherChannel static)'
+              type: SNMP_AGENT
+              key: 'portchannel.ifName.ec[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#POIFINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 6b7c8d9e0f1a4b2c8d3e4f5a6b7c8d9e
+              name: 'ifOperStatus ifIndex {#IFINDEX} (EtherChannel static)'
+              type: SNMP_AGENT
+              key: 'ifOperStatus.ec[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#IFINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 7c8d9e0f1a2b4c3d8e9f0a1b2c3d4e5f
+              name: 'PortChannel ifOperStatus for ifIndex {#IFINDEX} (EtherChannel static)'
+              type: SNMP_AGENT
+              key: 'portchannel.ifOperStatus.ec[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#POIFINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 8d9e0f1a2b3c4d4e8f0a1b2c3d4e5f60
+              name: 'LACP attachedAggID (dedupe) ifIndex {#IFINDEX} (EtherChannel static)'
+              type: SNMP_AGENT
+              key: 'lacp.member.poifindex.ec[{#IFINDEX}]'
+              snmp_oid: '1.2.840.10006.300.43.1.2.1.1.12.{#IFINDEX}'
+              delay: 60s
+              value_type: UNSIGNED
+              preprocessing:
+                - type: REGEX
+                  parameters:
+                    - '^(\d+)$'
+                    - '\1'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+          trigger_prototypes:
+            - uuid: 9e0f1a2b3c4d4e5f8a0b1c2d3e4f5a6b
+              name: 'Interface {#IFINDEX} Down - {#POIFINDEX} (EtherChannel static)'
+              expression: 'last(/Template Cisco PortChannel Member Monitoring/ifName.member.ec[{#IFINDEX}])<>"" and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifName.ec[{#IFINDEX}])<>"" and (min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.ec[{#IFINDEX}],{$LINK.DOWN.DURATION})=2 or min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.ec[{#IFINDEX}],{$LINK.DOWN.DURATION})=7) and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifOperStatus.ec[{#IFINDEX}])=1 and last(/Template Cisco PortChannel Member Monitoring/lacp.member.poifindex.ec[{#IFINDEX}])=0'
+              event_name: '{HOST.HOST} Interface {ITEM.LASTVALUE1} down - {ITEM.LASTVALUE2}'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: interface
+                  value: '{#IFINDEX}'
+                - tag: portchannel
+                  value: '{#POIFINDEX}'
+
+        - uuid: b2c3d4e5f6a74f8b8c9d0e1f2a3b4c5d
+          name: EtherChannel member port discovery (ifStackTable fallback)
+          type: DEPENDENT
+          key: etherchannel.member.discovery.ifstack
+          delay: '0'
+          description: |
+            Fallback discovery for PortChannel members using IF-MIB ifStackTable.
+            Discovers member ifIndex -> PortChannel ifIndex relationships from ifStackStatus (RowStatus).
+            Dedupe: suppressed when the interface is already found via LACP (dot3adAggPortAttachedAggID > 0).
+          master_item:
+            key: ifStackTable.walk
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Input: SNMP walk text of IF-MIB ifStackTable (1.3.6.1.2.1.31.1.2.1)
+                  // We use ifStackStatus (.3) entries where status is NOT destroy(6).
+                  // Some devices report notReady(3)/createAndGo(4)/createAndWait(5) for valid relationships.
+                  // Output: {"data":[{"{#IFINDEX}":"<member>","{#POIFINDEX}":"<poIfIndex>"}, ...]}
+
+                  var text = value || '';
+                  var lines = text.split(/\r?\n/);
+                  var data = [];
+                  var seen = {};
+
+                  function addPair(memberIf, poIf) {
+                    if (!memberIf || !poIf) return;
+                    if (memberIf <= 0 || poIf <= 0) return;
+                    if (memberIf === poIf) return;
+                    var key = memberIf + ':' + poIf;
+                    if (seen[key]) return;
+                    seen[key] = true;
+                    data.push({"{#IFINDEX}": String(memberIf), "{#POIFINDEX}": String(poIf)});
+                  }
+
+                  for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (!line) continue;
+
+                    var m = line.match(/^(\S+)\s*=\s*(.*)$/);
+                    if (!m) continue;
+                    var oid = m[1];
+                    var rhs = m[2];
+
+                    var om = oid.match(/(?:^|\.)1\.3\.6\.1\.2\.1\.31\.1\.2\.1\.3\.(\d+)\.(\d+)$/) ||
+                             oid.match(/ifStackStatus\.(\d+)\.(\d+)$/);
+                    if (!om) continue;
+
+                    var higher = parseInt(om[1], 10);
+                    var lower = parseInt(om[2], 10);
+
+                    // ifStackStatus is RowStatus; some devices flip away from active(1) during transitions.
+                    var statusVal = null;
+                    // Some SNMP libraries print labels differently (e.g. inactive(2) instead of notInService(2)).
+                    // Capture any token like <word>(<number>) and trust the numeric part.
+                    var mNamed = rhs.match(/\b([A-Za-z][A-Za-z0-9_-]*)\((\d+)\)\b/);
+                    if (mNamed) {
+                      statusVal = parseInt(mNamed[2], 10);
+                    } else {
+                      var mInt = rhs.match(/\bINTEGER:\s*(\d+)\b/);
+                      if (mInt) statusVal = parseInt(mInt[1], 10);
+                      else {
+                        var mEq = rhs.match(/=\s*(\d+)\b/);
+                        if (mEq) statusVal = parseInt(mEq[1], 10);
+                      }
+                    }
+
+                    // Accept RowStatus 1..5 (active/notInService/notReady/createAndGo/createAndWait).
+                    // Ignore destroy(6) and unknown/empty.
+                    if (!(statusVal >= 1 && statusVal <= 5)) continue;
+
+                    // Devices may index ifStackStatus as <higher>.<lower> or the reverse.
+                    // In practice, PortChannel ifIndex is usually higher than its members.
+                    // Use min/max so we discover the relationship regardless of ordering.
+                    var memberIf = Math.min(higher, lower);
+                    var poIf = Math.max(higher, lower);
+                    addPair(memberIf, poIf);
+                  }
+
+                  return JSON.stringify({data: data});
+          item_prototypes:
+            - uuid: c3d4e5f6a7b84c9d8e0f1a2b3c4d5e6f
+              name: 'ifName ifIndex {#IFINDEX} (ifStack fallback)'
+              type: SNMP_AGENT
+              key: 'ifName.member.ifstack[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#IFINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: d4e5f6a7b8c94d8e8f0a1b2c3d4e5f60
+              name: 'PortChannel name for ifIndex {#IFINDEX} (ifStack fallback)'
+              type: SNMP_AGENT
+              key: 'portchannel.ifName.ifstack[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#POIFINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: e5f6a7b8c9d04e1f8a0b1c2d3e4f5a6b
+              name: 'ifOperStatus ifIndex {#IFINDEX} (ifStack fallback)'
+              type: SNMP_AGENT
+              key: 'ifOperStatus.ifstack[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#IFINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: f6a7b8c9d0e14f2a8b0c1d2e3f4a5b6c
+              name: 'PortChannel ifOperStatus for ifIndex {#IFINDEX} (ifStack fallback)'
+              type: SNMP_AGENT
+              key: 'portchannel.ifOperStatus.ifstack[{#IFINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#POIFINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: PortChannel
+                  value: '{#POIFINDEX}'
+            - uuid: 0a1b2c3d4e5f4a6b8c9d0e1f2a3b4c5d
+              name: 'LACP attachedAggID (dedupe) ifIndex {#IFINDEX} (ifStack fallback)'
+              type: SNMP_AGENT
+              key: 'lacp.member.poifindex.ifstack[{#IFINDEX}]'
+              snmp_oid: '1.2.840.10006.300.43.1.2.1.1.12.{#IFINDEX}'
+              delay: 60s
+              value_type: UNSIGNED
+              preprocessing:
+                - type: REGEX
+                  parameters:
+                    - '^(\\d+)$'
+                    - '\\1'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+              tags:
+                - tag: Interface
+                  value: '{#IFINDEX}'
+          trigger_prototypes:
+            - uuid: 1a2b3c4d5e6f4a7b8c9d0e1f2a3b4c5d
+              name: 'Interface {#IFINDEX} Down - {#POIFINDEX} (ifStack fallback)'
+              expression: 'last(/Template Cisco PortChannel Member Monitoring/ifName.member.ifstack[{#IFINDEX}])<>"" and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifName.ifstack[{#IFINDEX}])<>"" and (min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.ifstack[{#IFINDEX}],{$LINK.DOWN.DURATION})=2 or min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.ifstack[{#IFINDEX}],{$LINK.DOWN.DURATION})=7) and last(/Template Cisco PortChannel Member Monitoring/portchannel.ifOperStatus.ifstack[{#IFINDEX}])=1 and find(/Template Cisco PortChannel Member Monitoring/portchannel.ifName.ifstack[{#IFINDEX}],,"regexp","^(Po|Port-channel)")=1 and last(/Template Cisco PortChannel Member Monitoring/lacp.member.poifindex.ifstack[{#IFINDEX}])=0'
+              event_name: '{HOST.HOST} Interface {ITEM.LASTVALUE1} down - {ITEM.LASTVALUE2}'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: interface
+                  value: '{#IFINDEX}'
+                - tag: portchannel
+                  value: '{#POIFINDEX}'
+
+        - uuid: 3d2c1b0a9f8e4d7c8b6a5f4e3d2c1b0a
+          name: EtherChannel member port discovery (mode on via SSH)
+          type: DEPENDENT
+          key: etherchannel.modeon.member.discovery
+          delay: '0'
+          lifetime: 30d
+          enabled_lifetime: 30d
+          description: |
+            Discovers EtherChannel members for static mode (Protocol "-") from
+            "show etherchannel summary" (SSH).
+
+            Important: handles wrapped port lists (members on the next line), e.g.:
+              Po72(SU)  -  Gi1/4/0/5(P) Gi1/4/0/19(P)
+                           Gi2/4/0/19(D)
+          master_item:
+            key: 'ssh.run[etherchannel.summary,{HOST.CONN},{$SSH.PORT},utf8]'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  // Input: raw output of "show etherchannel summary".
+                  // Output: discovery JSON {"data":[{"{#PO}":"Po72","{#IFNAME}":"Gi2/4/0/19"}, ...]}
+                  // Notes:
+                  // - Supports wrapped member lists (continuation lines).
+                  // - Discovers only Protocol "-" (static/mode on).
+
+                  function trim(s) { return (s == null) ? '' : String(s).replace(/^\s+|\s+$/g, ''); }
+
+                  var text = value || '';
+                  var lines = text.split(/\r?\n/);
+
+                  var data = [];
+                  var seen = {};
+
+                  var currentPo = null;
+                  var currentFlags = '';
+                  var currentProtocol = null;
+
+                  function addMember(po, ifname) {
+                    if (!po || !ifname) return;
+                    // Keep only physical-ish interface names (avoid Po tokens).
+                    if (String(ifname).indexOf('/') === -1) return;
+                    var k = po + '|' + ifname;
+                    if (seen[k]) return;
+                    seen[k] = true;
+                    data.push({"{#PO}": po, "{#IFNAME}": ifname});
+                  }
+
+                  // Example new group line:
+                  // 72     Po72(SU)         -          Gi1/4/0/5(P)    Gi1/4/0/19(P)
+                  var reGroup = /^\s*(\d+)\s+Po(\d+)\(([^)]*)\)\s+(\S+)\s+(.*)$/;
+                  // Example continuation line:
+                  //        Gi2/4/0/19(D)
+                  var rePortToken = /([A-Za-z][A-Za-z0-9\/-]*?)\(([^)]+)\)/g;
+
+                  for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i];
+                    if (!line) continue;
+
+                    // Skip header/separators
+                    if (/^\s*Group\s+Port-channel\s+Protocol\s+Ports\s*$/i.test(line)) continue;
+                    if (/^\s*-+\s*$/.test(line)) continue;
+
+                    var m = line.match(reGroup);
+                    if (m) {
+                      currentPo = 'Po' + m[2];
+                      currentFlags = trim(m[3] || '');
+                      currentProtocol = trim(m[4] || '');
+
+                      if (currentProtocol !== '-') continue;
+
+                      var portsPart = m[5] || '';
+                      var mt;
+                      rePortToken.lastIndex = 0;
+                      while ((mt = rePortToken.exec(portsPart)) !== null) {
+                        addMember(currentPo, mt[1]);
+                      }
+
+                      continue;
+                    }
+
+                    // Continuation line: only meaningful if we're inside a mode-on block.
+                    if (!currentPo || currentProtocol !== '-') continue;
+
+                    var portsOnly = String(line);
+                    var mt2;
+                    rePortToken.lastIndex = 0;
+                    while ((mt2 = rePortToken.exec(portsOnly)) !== null) {
+                      addMember(currentPo, mt2[1]);
+                    }
+                  }
+
+                  return JSON.stringify({data: data});
+          item_prototypes:
+            - uuid: 8f7e6d5c4b3a4f2e9d8c7b6a5f4e3d2c
+              name: 'Member {#IFNAME} down on {#PO} (mode on)'
+              type: DEPENDENT
+              key: 'etherchannel.modeon.member.down[{#PO},{#IFNAME}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: 'ssh.run[etherchannel.summary,{HOST.CONN},{$SSH.PORT},utf8]'
+              preprocessing:
+                - type: JAVASCRIPT
+                  parameters:
+                    - |
+                      // Returns 1 if {#IFNAME} is (D) on {#PO} while Po is Up (flag contains U) and Protocol is '-'. Else 0.
+
+                      function trim(s) { return (s == null) ? '' : String(s).replace(/^\s+|\s+$/g, ''); }
+                      var targetPo = '{#PO}';
+                      var targetIf = '{#IFNAME}';
+
+                      var text = value || '';
+                      var lines = text.split(/\r?\n/);
+
+                      var currentPo = null;
+                      var currentFlags = '';
+                      var currentProtocol = null;
+
+                      var portsPart = '';
+
+                      var reGroup = /^\s*(\d+)\s+Po(\d+)\(([^)]*)\)\s+(\S+)\s+(.*)$/;
+                      var rePortToken = /([A-Za-z][A-Za-z0-9\/-]*?)\(([^)]+)\)/g;
+
+                      function poUp(flags) {
+                        return String(flags || '').indexOf('U') !== -1;
+                      }
+
+                      function checkPortsChunk(portsChunk) {
+                        rePortToken.lastIndex = 0;
+                        var m;
+                        while ((m = rePortToken.exec(portsChunk)) !== null) {
+                          var ifname = m[1];
+                          var st = String(m[2] || '');
+                          if (ifname === targetIf && st.indexOf('D') !== -1) return true;
+                        }
+                        return false;
+                      }
+
+                      for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i];
+                        if (!line) continue;
+                        if (/^\s*Group\s+Port-channel\s+Protocol\s+Ports\s*$/i.test(line)) continue;
+                        if (/^\s*-+\s*$/.test(line)) continue;
+
+                        var mg = line.match(reGroup);
+                        if (mg) {
+                          currentPo = 'Po' + mg[2];
+                          currentFlags = trim(mg[3] || '');
+                          currentProtocol = trim(mg[4] || '');
+                          portsPart = mg[5] || '';
+                        } else {
+                          // continuation line
+                          portsPart = String(line);
+                        }
+
+                        if (currentPo !== targetPo) continue;
+                        if (currentProtocol !== '-') continue;
+                        if (!poUp(currentFlags)) return 0;
+
+                        if (checkPortsChunk(portsPart)) return 1;
+                      }
+
+                      return 0;
+              tags:
+                - tag: interface
+                  value: '{#IFNAME}'
+                - tag: portchannel
+                  value: '{#PO}'
+          trigger_prototypes:
+            - uuid: 2c1b0a9f8e7d4c3b9a8f7e6d5c4b3a2f
+              name: 'Interface {#IFNAME} Down - {#PO} (mode on)'
+              expression: 'min(/Template Cisco PortChannel Member Monitoring/etherchannel.modeon.member.down[{#PO},{#IFNAME}],{$LINK.DOWN.DURATION})=1'
+              event_name: '{HOST.HOST} Interface {#IFNAME} down - {#PO}'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: interface
+                  value: '{#IFNAME}'
+                - tag: portchannel
+                  value: '{#PO}'
+
+        - uuid: 7c75e0702e00455d98777485f217e1a0
+          name: Trunk port discovery (Cisco)
+          type: SNMP_AGENT
+          key: trunk.port.discovery
+          delay: 5m
+          description: |
+            Discovers trunk ports using CISCO-VTP-MIB vlanTrunkPortTable.
+            Triggers if the interface stays down (even if dynamic trunk status flips while down).
+            Notes:
+            - Works for standalone trunk ports.
+            - PortChannel member links are handled by the LACP discovery above.
+          snmp_oid: 'discovery[{#TRUNKSTATUS},1.3.6.1.4.1.9.9.46.1.6.1.1.14]'
+          filter:
+            evaltype: AND
+            conditions:
+              - macro: '{#TRUNKSTATUS}'
+                value: '^1$'
+                operator: MATCHES_REGEX
+                formulaid: A
+          item_prototypes:
+            - uuid: 6b7c16c4f1c145c4905140ecb6b0fb93
+              name: 'ifName ifIndex {#SNMPINDEX} (trunk discovery)'
+              type: SNMP_AGENT
+              key: 'ifName.trunk[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.31.1.1.1.1.{#SNMPINDEX}'
+              delay: 60s
+              value_type: CHAR
+              trends: '0'
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: Role
+                  value: trunk
+              preprocessing:
+                - type: REGEX
+                  parameters:
+                    - '^((Gi|Te|Fa|Eth|Hu|Fo|Tw|Twe|TenGigabitEthernet|GigabitEthernet|FastEthernet|Ethernet|Port-channel|Po).*)$'
+                    - '\1'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: ''
+            - uuid: 175e7f1566a94d7cae373ce5bc3feba6
+              name: 'Trunk status ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'trunk.dynamicStatus[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.4.1.9.9.46.1.6.1.1.14.{#SNMPINDEX}'
+              delay: 5m
+              value_type: UNSIGNED
+              description: 'CISCO-VTP-MIB::vlanTrunkPortDynamicStatus (1=trunking, 2=notTrunking)'
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: Role
+                  value: trunk
+            - uuid: 9b7a4a1cd9bf4a858edcb96967d91517
+              name: 'PortChannel ifIndex (presence check) ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'lacp.member.poifindex.trunk[{#SNMPINDEX}]'
+              snmp_oid: '1.2.840.10006.300.43.1.2.1.1.12.{#SNMPINDEX}'
+              delay: 60s
+              value_type: UNSIGNED
+              description: 'dot3adAggPortAttachedAggID. If >0, interface is part of an LACP PortChannel (used to suppress duplicate trunk alerts).'
+              preprocessing:
+                - type: REGEX
+                  parameters:
+                    - '^(\\d+)$'
+                    - '\1'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: 2c3d4e5f6a7b4c8d9e0f1a2b3c4d5e6f
+              name: 'PortChannel operKey (fallback membership) ifIndex {#SNMPINDEX}'
+              type: SNMP_AGENT
+              key: 'lacp.member.aggkey.trunk[{#SNMPINDEX}]'
+              delay: 5m
+              value_type: UNSIGNED
+              snmp_oid: '1.2.840.10006.300.43.1.2.1.1.4.{#SNMPINDEX}'
+              preprocessing:
+                - type: REGEX
+                  parameters:
+                    - '^(\\d+)$'
+                    - '\\1'
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: d2a103b0df6e4da1b0640621f6bd1fff
+              name: 'ifOperStatus ifIndex {#SNMPINDEX} (trunk)'
+              type: SNMP_AGENT
+              key: 'ifOperStatus.trunk[{#SNMPINDEX}]'
+              snmp_oid: '1.3.6.1.2.1.2.2.1.8.{#SNMPINDEX}'
+              delay: 60s
+              valuemap:
+                name: IF-MIB::ifOperStatus
+              tags:
+                - tag: Interface
+                  value: '{#SNMPINDEX}'
+                - tag: Role
+                  value: trunk
+          trigger_prototypes:
+            - uuid: 5a95f773c32242df8b705f8b3d72e8c1
+              name: 'Interface ifIndex {#SNMPINDEX} Down - trunk'
+              expression: 'last(/Template Cisco PortChannel Member Monitoring/ifName.trunk[{#SNMPINDEX}])<>"" and (min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.trunk[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=2 or min(/Template Cisco PortChannel Member Monitoring/ifOperStatus.trunk[{#SNMPINDEX}],{$LINK.DOWN.DURATION})=7) and last(/Template Cisco PortChannel Member Monitoring/lacp.member.poifindex.trunk[{#SNMPINDEX}])=0 and last(/Template Cisco PortChannel Member Monitoring/lacp.member.aggkey.trunk[{#SNMPINDEX}])=0'
+              event_name: '{HOST.HOST} Interface {ITEM.LASTVALUE1} down - trunk'
+              priority: AVERAGE
+              manual_close: 'NO'
+              tags:
+                - tag: symptom
+                  value: link-down
+                - tag: interface
+                  value: '{#SNMPINDEX}'
+                - tag: role
+                  value: trunk

@@ -5,13 +5,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import NetworkError
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -143,9 +143,9 @@ def from_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def daterange(start: date, days: int) -> Iterable[date]:
+def daterange(start_date: date, days: int) -> Iterable[date]:
     for i in range(days):
-        yield start + timedelta(days=i)
+        yield start_date + timedelta(days=i)
 
 
 def is_holiday(d: date, cfg: Config) -> bool:
@@ -273,7 +273,7 @@ def day_keyboard(days: list[date]) -> InlineKeyboardMarkup:
 
 def slots_keyboard(d: date, slots: list[tuple[datetime, datetime]]) -> InlineKeyboardMarkup:
     buttons = []
-    for start_dt, end_dt in slots:
+    for start_dt, _end_dt in slots:
         label = f"{start_dt.strftime('%H:%M')}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"slot:{d.isoformat()}:{start_dt.strftime('%H:%M')}")])
     buttons.append([InlineKeyboardButton("Voltar", callback_data="menu:agendar")])
@@ -282,7 +282,6 @@ def slots_keyboard(d: date, slots: list[tuple[datetime, datetime]]) -> InlineKey
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = load_config()
-    tzinfo = get_tzinfo(cfg)
     db_init()
 
     name = update.effective_user.full_name if update.effective_user else ""
@@ -298,7 +297,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["customer_name"] = name
 
 
-async def cmd_agendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_agendar(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
     today = now_tz(tzinfo).date()
@@ -312,7 +311,7 @@ async def cmd_agendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(text, reply_markup=day_keyboard(days))
 
 
-async def cmd_meus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_meus(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
 
@@ -477,7 +476,7 @@ async def reminder_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 conn.execute("UPDATE appointments SET reminded=1 WHERE id=?", (appt_id,))
                 conn.commit()
-            except Exception:
+            except TelegramError:
                 # Se falhar (usuário bloqueou bot, etc), tenta de novo no próximo tick.
                 pass
     finally:
@@ -490,9 +489,6 @@ def main() -> None:
         raise RuntimeError(
             "Defina a variável de ambiente TELEGRAM_BOT_TOKEN com o token do seu bot (BotFather)."
         )
-
-    cfg = load_config()
-    tzinfo = get_tzinfo(cfg)
 
     db_init()
 

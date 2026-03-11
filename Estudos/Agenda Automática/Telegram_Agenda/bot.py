@@ -1,3 +1,5 @@
+"""Bot de agenda via Telegram com armazenamento local em SQLite."""
+
 import json
 import os
 import sqlite3
@@ -5,13 +7,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import NetworkError
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -31,6 +33,8 @@ WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 @dataclass(frozen=True)
 class Config:
+    """Configuração carregada do arquivo config.json."""
+
     timezone: str
     slot_minutes: int
     days_ahead: int
@@ -41,6 +45,8 @@ class Config:
 
 
 def load_config() -> Config:
+    """Lê o arquivo de configuração e devolve um objeto imutável."""
+
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -56,6 +62,8 @@ def load_config() -> Config:
 
 
 def db_connect() -> sqlite3.Connection:
+    """Abre uma conexão SQLite com pragmas adequados para o bot."""
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -64,6 +72,8 @@ def db_connect() -> sqlite3.Connection:
 
 
 def db_init() -> None:
+    """Cria as estruturas de banco necessárias caso ainda não existam."""
+
     conn = db_connect()
     try:
         conn.execute(
@@ -94,15 +104,21 @@ def db_init() -> None:
 
 
 def parse_hhmm(value: str) -> time:
+    """Converte uma string HH:MM em objeto time."""
+
     hh, mm = value.split(":")
     return time(hour=int(hh), minute=int(mm))
 
 
 def now_tz(tzinfo) -> datetime:
+    """Retorna o instante atual no fuso informado."""
+
     return datetime.now(tzinfo)
 
 
 def get_tzinfo(cfg: Config) -> ZoneInfo:
+    """Resolve o fuso horário configurado e falha com mensagem clara."""
+
     try:
         return ZoneInfo(cfg.timezone)
     except Exception as exc:
@@ -136,28 +152,40 @@ def build_telegram_request() -> HTTPXRequest:
 
 
 def iso(dt: datetime) -> str:
+    """Serializa um datetime para ISO 8601 sem microssegundos."""
+
     return dt.isoformat(timespec="seconds")
 
 
 def from_iso(value: str) -> datetime:
+    """Converte uma string ISO 8601 em datetime."""
+
     return datetime.fromisoformat(value)
 
 
-def daterange(start: date, days: int) -> Iterable[date]:
+def daterange(start_date: date, days: int) -> Iterable[date]:
+    """Gera uma sequência de datas a partir da data inicial."""
+
     for i in range(days):
-        yield start + timedelta(days=i)
+        yield start_date + timedelta(days=i)
 
 
 def is_holiday(d: date, cfg: Config) -> bool:
+    """Indica se a data está marcada como feriado na configuração."""
+
     return d.isoformat() in cfg.holidays
 
 
 def day_key(d: date) -> str:
+    """Mapeia uma data para a chave de dia da semana usada no config."""
+
     # Monday=0
     return WEEKDAY_KEYS[d.weekday()]
 
 
 def generate_slots_for_day(d: date, cfg: Config, tzinfo) -> list[tuple[datetime, datetime]]:
+    """Gera os slots válidos de atendimento para um dia específico."""
+
     if is_holiday(d, cfg):
         return []
 
@@ -180,6 +208,8 @@ def generate_slots_for_day(d: date, cfg: Config, tzinfo) -> list[tuple[datetime,
 
 
 def slot_is_available(start_dt: datetime, cfg: Config) -> bool:
+    """Verifica se um horário está livre para reserva."""
+
     if cfg.allow_overbooking:
         return True
 
@@ -195,6 +225,8 @@ def slot_is_available(start_dt: datetime, cfg: Config) -> bool:
 
 
 def book_slot(chat_id: int, customer_name: str, start_dt: datetime, end_dt: datetime, cfg: Config) -> bool:
+    """Cria um agendamento para o usuário se o slot continuar disponível."""
+
     conn = db_connect()
     try:
         if not cfg.allow_overbooking:
@@ -219,6 +251,8 @@ def book_slot(chat_id: int, customer_name: str, start_dt: datetime, end_dt: date
 
 
 def list_upcoming(chat_id: int, tzinfo) -> list[sqlite3.Row]:
+    """Lista os próximos agendamentos ativos do usuário."""
+
     conn = db_connect()
     try:
         now_iso = iso(datetime.now(tzinfo))
@@ -237,6 +271,8 @@ def list_upcoming(chat_id: int, tzinfo) -> list[sqlite3.Row]:
 
 
 def cancel_appointment(chat_id: int, appt_id: int) -> bool:
+    """Cancela um agendamento do usuário pelo identificador."""
+
     conn = db_connect()
     try:
         cur = conn.execute(
@@ -250,10 +286,14 @@ def cancel_appointment(chat_id: int, appt_id: int) -> bool:
 
 
 def fmt_dt(dt: datetime) -> str:
+    """Formata uma data para apresentação em português."""
+
     return dt.strftime("%d/%m/%Y %H:%M")
 
 
 def menu_keyboard() -> InlineKeyboardMarkup:
+    """Monta o teclado principal do bot."""
+
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Agendar", callback_data="menu:agendar")],
@@ -263,6 +303,8 @@ def menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def day_keyboard(days: list[date]) -> InlineKeyboardMarkup:
+    """Monta o teclado com os dias disponíveis para agendamento."""
+
     buttons = []
     for d in days:
         label = d.strftime("%a %d/%m")
@@ -272,8 +314,10 @@ def day_keyboard(days: list[date]) -> InlineKeyboardMarkup:
 
 
 def slots_keyboard(d: date, slots: list[tuple[datetime, datetime]]) -> InlineKeyboardMarkup:
+    """Monta o teclado com os horários livres de um dia."""
+
     buttons = []
-    for start_dt, end_dt in slots:
+    for start_dt, _end_dt in slots:
         label = f"{start_dt.strftime('%H:%M')}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"slot:{d.isoformat()}:{start_dt.strftime('%H:%M')}")])
     buttons.append([InlineKeyboardButton("Voltar", callback_data="menu:agendar")])
@@ -281,8 +325,9 @@ def slots_keyboard(d: date, slots: list[tuple[datetime, datetime]]) -> InlineKey
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Exibe a tela inicial e guarda o nome do usuário no contexto."""
+
     cfg = load_config()
-    tzinfo = get_tzinfo(cfg)
     db_init()
 
     name = update.effective_user.full_name if update.effective_user else ""
@@ -298,7 +343,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["customer_name"] = name
 
 
-async def cmd_agendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_agendar(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mostra os próximos dias disponíveis para agendamento."""
+
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
     today = now_tz(tzinfo).date()
@@ -312,7 +359,9 @@ async def cmd_agendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(text, reply_markup=day_keyboard(days))
 
 
-async def cmd_meus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_meus(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lista os agendamentos futuros do chat atual."""
+
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
 
@@ -333,6 +382,8 @@ async def cmd_meus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Processa callbacks de menu, seleção de dia, slot e cancelamento."""
+
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
 
@@ -439,6 +490,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def reminder_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Envia lembretes para agendamentos próximos e marca como enviados."""
+
     # Job que roda periodicamente e envia lembretes 2h antes.
     cfg = load_config()
     tzinfo = get_tzinfo(cfg)
@@ -477,7 +530,7 @@ async def reminder_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 conn.execute("UPDATE appointments SET reminded=1 WHERE id=?", (appt_id,))
                 conn.commit()
-            except Exception:
+            except TelegramError:
                 # Se falhar (usuário bloqueou bot, etc), tenta de novo no próximo tick.
                 pass
     finally:
@@ -485,14 +538,13 @@ async def reminder_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    """Inicializa a aplicação Telegram e inicia o polling."""
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError(
             "Defina a variável de ambiente TELEGRAM_BOT_TOKEN com o token do seu bot (BotFather)."
         )
-
-    cfg = load_config()
-    tzinfo = get_tzinfo(cfg)
 
     db_init()
 

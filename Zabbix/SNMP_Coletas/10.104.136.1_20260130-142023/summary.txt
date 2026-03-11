@@ -1,7 +1,0 @@
-sysName first line: ['SNMPv2-SMI::mib-2.1.5.0 = br-americanaDIST-swr.la.net.goodyear.com']
-ciscoPortChannelTable lines: 0
-dot3adAggPortTable lines: 2668
-ifName lines: 755
-ifOperStatus lines: 755
-ifStackStatus lines: 1410
-vlanTrunkPortDynamicStatus lines: 617

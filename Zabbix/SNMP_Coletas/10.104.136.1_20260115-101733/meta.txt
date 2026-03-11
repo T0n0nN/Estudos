@@ -1,8 +1,0 @@
-Target=10.104.136.1
-Community=gyplant
-Timestamp=20260115-101733
-TimeoutSeconds=5
-Retries=1
-MaxRepetitions=50
-Mode=READONLY
-Note=No SNMP SET is performed

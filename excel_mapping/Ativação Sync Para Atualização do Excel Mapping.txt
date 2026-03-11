@@ -1,7 +1,0 @@
-Automático (fica “ouvindo” mudanças no JSON):
-
-"C:\Users\za68397\OneDrive - Goodyear\ChatGPT\.venv\Scripts\python.exe" "C:\Users\za68397\OneDrive - Goodyear\ChatGPT\excel_mapping\generate_mapping_excel.py" --watch
-
-
-
-"C:/Users/za68397/OneDrive - Goodyear/ChatGPT/.venv/Scripts/python.exe" "c:/Users/za68397/OneDrive - Goodyear/ChatGPT/excel_mapping/generate_mapping_excel.py" --watch

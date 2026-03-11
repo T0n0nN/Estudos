@@ -1,1 +1,0 @@
-SNMPv2-SMI::mib-2.1.5.0 = br-americanaDIST-swr.la.net.goodyear.com
